@@ -12,7 +12,7 @@ namespace EsiSearchProxy.Controllers
     {
         private static readonly Regex SearchEndpointRegex = new(@"^/?(?:v[1-9]|latest|dev|legacy)/search/?.*", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
-        private static readonly IEnumerable<string> EsiSearchProxyHeaders = new[] { "X-Proxy-Auth", "X-Entity-ID", "X-Token-Type" };
+        private static readonly IEnumerable<string> EsiSearchProxyHeaders = new[] { "Host", "X-Proxy-Auth", "X-Entity-ID", "X-Token-Type" };
         private static readonly IEnumerable<string> StrippedEsiResponseHeaders = new[] { "strict-transport-security", "transfer-encoding" };
 
         private readonly ILogger<EsiSearchProxyController> _logger;
@@ -40,8 +40,6 @@ namespace EsiSearchProxy.Controllers
 
             try
             {
-                var entityId = Request.Headers["X-Entity-ID"].FirstOrDefault();
-
                 using var httpClient = _httpClientFactory.CreateClient();
                 httpClient.BaseAddress = new Uri(_esiConfiguration.BaseUrl);
 
@@ -97,7 +95,7 @@ namespace EsiSearchProxy.Controllers
             var headers = Request.Headers.Where(x => !EsiSearchProxyHeaders.Contains(x.Key, StringComparer.OrdinalIgnoreCase));
             foreach (var header in headers)
             {
-                request.Content?.Headers.TryAddWithoutValidation(header.Key, header.Value.ToArray());
+                request.Headers.TryAddWithoutValidation(header.Key, header.Value.ToArray());
             }
 
             if (!HasRequestBody(method))
