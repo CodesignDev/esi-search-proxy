@@ -11,6 +11,7 @@ namespace EsiSearchProxy.Controllers
     public class EsiSearchProxyController : Controller
     {
         private static readonly Regex SearchEndpointRegex = new(@"^/?(?:v[1-9]|latest|dev|legacy)/search/?.*", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        private static readonly Regex CharacterOnlineEndpointRegex = new(@"^/?(v[1-9]|latest|dev|legacy)/characters/([0-9]+)/online/?.*", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         private static readonly IEnumerable<string> EsiSearchProxyHeaders = new[] { "Host", "X-Proxy-Auth", "X-Entity-ID", "X-Token-Type" };
         private static readonly IEnumerable<string> StrippedEsiResponseHeaders = new[] { "strict-transport-security", "transfer-encoding" };
@@ -43,38 +44,26 @@ namespace EsiSearchProxy.Controllers
                 using var httpClient = _httpClientFactory.CreateClient();
                 httpClient.BaseAddress = new Uri(_esiConfiguration.BaseUrl);
 
-                using var esiRequest = CreateEsiRequest(requestMethod, esiRoute);
-
-                // Check to see if this a search endpoint request
-                if (SearchEndpointRegex.IsMatch(esiRoute))
+                using var esiRequest = true switch
                 {
-                    var characterSearchUrl = GetEsiRequestUrl(
-                        $"/v3/characters/{_esiConfiguration.CharacterId}/search/"
-                    );
-                    esiRequest.RequestUri = new Uri(characterSearchUrl, UriKind.RelativeOrAbsolute);
-
-                    // Attach an auth token to this request
-                    var authorizationToken = await _esiAuthService.GetAccessToken();
-                    esiRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", authorizationToken);
-                }
+                    true when SearchEndpointRegex.IsMatch(esiRoute) => await CreateProxiedSearchRequest(),
+                    true when CharacterOnlineEndpointRegex.IsMatch(esiRoute) => CreateProxiedOnlineRequest(esiRoute),
+                    _ => CreateEsiRequest(requestMethod, esiRoute)
+                };
 
                 using var esiResponse = await httpClient.SendAsync(esiRequest);
 
-                Response.StatusCode = (int)esiResponse.StatusCode;
-
-                var responseHeaders = esiResponse.Headers.Concat(esiResponse.Content.Headers);
-                foreach (var header in responseHeaders)
+                // Process the esi response
+                switch (true)
                 {
-                    Response.Headers[header.Key] = header.Value.ToArray();
-                }
+                    case true when CharacterOnlineEndpointRegex.IsMatch(esiRoute):
+                        await ProcessCharacterOnlineResponse(esiRoute, esiResponse);
+                        break;
 
-                // Remove headers that could potentially cause issues
-                foreach (var header in StrippedEsiResponseHeaders)
-                {
-                    Response.Headers.Remove(header);
+                    default:
+                        await ProcessEsiResponse(esiResponse);
+                        break;
                 }
-
-                await esiResponse.Content.CopyToAsync(Response.Body);
             }
             catch (Exception ex)
             {
@@ -83,9 +72,9 @@ namespace EsiSearchProxy.Controllers
             }
         }
 
-        private HttpRequestMessage CreateEsiRequest(string method, string esiRoute)
+        private HttpRequestMessage CreateEsiRequest(string method, string url)
         {
-            var requestUrl = GetEsiRequestUrl(esiRoute);
+            var requestUrl = GetEsiRequestUrl(url);
             var request = new HttpRequestMessage
             {
                 RequestUri = new Uri(requestUrl, UriKind.RelativeOrAbsolute),
@@ -107,12 +96,89 @@ namespace EsiSearchProxy.Controllers
             return request;
         }
 
-        private string GetEsiRequestUrl(string esiRoute)
+        private async Task<HttpRequestMessage> CreateProxiedSearchRequest()
         {
-            var esiUrl = esiRoute.StartsWith('/') ? esiRoute : $"/{esiRoute}";
+            var characterSearchUrl = GetEsiRequestUrl(
+                $"/v3/characters/{_esiConfiguration.CharacterId}/search/"
+            );
+            var request = CreateEsiRequest("GET", characterSearchUrl);
+
+            // Attach an auth token to this request
+            var authorizationToken = await _esiAuthService.GetAccessToken();
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", authorizationToken);
+
+            return request;
+        }
+
+        private HttpRequestMessage CreateProxiedOnlineRequest(string url)
+        {
+            var characterOnlineRouteMatch = CharacterOnlineEndpointRegex.Match(url);
+            if (!characterOnlineRouteMatch.Success || characterOnlineRouteMatch.Groups[1].Value is not ("v1" or "legacy"))
+                return CreateEsiRequest(Request.Method, url);
+
+            var characterId = characterOnlineRouteMatch.Groups[2].Value;
+
+            var characterSearchUrl = GetEsiRequestUrl(
+                $"/v3/characters/{characterId}/online/"
+            );
+            var request = CreateEsiRequest("GET", characterSearchUrl);
+
+            return request;
+        }
+
+        private string GetEsiRequestUrl(string url)
+        {
+            var esiUrl = url.StartsWith('/') ? url : $"/{url}";
             var queryString = Request.QueryString.ToString();
 
             return $"{esiUrl}{queryString}";
+        }
+
+        private async Task ProcessEsiResponse(HttpResponseMessage response)
+        {
+            ProcessResponseHeaders(response);
+            await response.Content.CopyToAsync(Response.Body);
+        }
+
+        private async Task ProcessCharacterOnlineResponse(string requestUrl, HttpResponseMessage response)
+        {
+            // If the response doesn't need to be rewritten then exit
+            var characterOnlineRegexMatches = CharacterOnlineEndpointRegex.Match(requestUrl);
+            if (!characterOnlineRegexMatches.Success || characterOnlineRegexMatches.Groups[1].Value is not ("v1" or "legacy"))
+            {
+                await ProcessEsiResponse(response);
+                return;
+            }
+
+            // Decode the response from esi into a dynamic object
+            var characterOnlineResponse = await response.Content.ReadFromJsonAsync<IDictionary<string, object>>();
+
+            // Pull the online flag from the response
+            var isCharacterOnline = characterOnlineResponse?["online"] ?? false;
+
+            // Process the response headers (except the content length
+            ProcessResponseHeaders(response);
+            Response.Headers.Remove("Content-Length");
+
+            // Rewrite the content on the response
+            await Response.WriteAsJsonAsync(isCharacterOnline);
+        }
+
+        private void ProcessResponseHeaders(HttpResponseMessage response)
+        {
+            Response.StatusCode = (int)response.StatusCode;
+
+            var responseHeaders = response.Headers.Concat(response.Content.Headers);
+            foreach (var header in responseHeaders)
+            {
+                Response.Headers[header.Key] = header.Value.ToArray();
+            }
+
+            // Remove headers that could potentially cause issues
+            foreach (var header in StrippedEsiResponseHeaders)
+            {
+                Response.Headers.Remove(header);
+            }
         }
 
         private static HttpMethod GetHttpMethod(string method)
