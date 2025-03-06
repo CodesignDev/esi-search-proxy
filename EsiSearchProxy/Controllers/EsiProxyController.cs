@@ -98,9 +98,7 @@ namespace EsiSearchProxy.Controllers
 
         private async Task<HttpRequestMessage> CreateProxiedSearchRequest()
         {
-            var characterSearchUrl = GetEsiRequestUrl(
-                $"/v3/characters/{_esiConfiguration.CharacterId}/search/"
-            );
+            var characterSearchUrl = $"/v3/characters/{_esiConfiguration.CharacterId}/search/";
             var request = CreateEsiRequest("GET", characterSearchUrl);
 
             // Attach an auth token to this request
@@ -118,10 +116,8 @@ namespace EsiSearchProxy.Controllers
 
             var characterId = characterOnlineRouteMatch.Groups[2].Value;
 
-            var characterSearchUrl = GetEsiRequestUrl(
-                $"/v3/characters/{characterId}/online/"
-            );
-            var request = CreateEsiRequest("GET", characterSearchUrl);
+            var characterOnlineUrl = $"/v3/characters/{characterId}/online/";
+            var request = CreateEsiRequest("GET", characterOnlineUrl);
 
             return request;
         }
