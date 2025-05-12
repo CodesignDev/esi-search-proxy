@@ -28,6 +28,7 @@ builder.Services.AddHttpLogging(logging =>
     logging.RequestBodyLogLimit = 4096;
     logging.ResponseBodyLogLimit = 4096;
 });
+builder.Services.AddMemoryCache();
 
 // Setup configuration objects
 var esiConfiguration = builder.Configuration.GetSection("Esi");
@@ -35,7 +36,7 @@ var esiConfiguration = builder.Configuration.GetSection("Esi");
 builder.Services.Configure<EsiConfiguration>(esiConfiguration);
 
 // Add required esi services
-builder.Services.AddScoped<EsiAuthService>();
+builder.Services.AddSingleton<EsiTokenCache>();
 
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 builder.Services.AddEndpointsApiExplorer();

@@ -19,18 +19,18 @@ namespace EsiSearchProxy.Controllers
         private readonly ILogger<EsiSearchProxyController> _logger;
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly EsiConfiguration _esiConfiguration;
-        private readonly EsiAuthService _esiAuthService;
+        private readonly EsiTokenCache _esiTokenCache;
 
         public EsiSearchProxyController(
             ILogger<EsiSearchProxyController> logger,
             IHttpClientFactory httpClientFactory,
             IOptions<EsiConfiguration> esiConfiguration,
-            EsiAuthService esiAuthService)
+            EsiTokenCache esiTokenCache)
         {
             _logger = logger;
             _httpClientFactory = httpClientFactory;
             _esiConfiguration = esiConfiguration.Value;
-            _esiAuthService = esiAuthService;
+            _esiTokenCache = esiTokenCache;
         }
 
         [Route("{**esiRoute}")]
@@ -46,10 +46,14 @@ namespace EsiSearchProxy.Controllers
 
                 using var esiRequest = true switch
                 {
-                    true when SearchEndpointRegex.IsMatch(esiRoute) => await CreateProxiedSearchRequest(),
+                    true when SearchEndpointRegex.IsMatch(esiRoute) => CreateProxiedSearchRequest(),
                     true when CharacterOnlineEndpointRegex.IsMatch(esiRoute) => CreateProxiedOnlineRequest(esiRoute),
                     _ => CreateEsiRequest(requestMethod, esiRoute)
                 };
+
+                // Attempt to cache the token for use by other endpoints
+                if (!SearchEndpointRegex.IsMatch(esiRoute))
+                    SaveTokenFromRequest(esiRequest);
 
                 using var esiResponse = await httpClient.SendAsync(esiRequest);
 
@@ -96,13 +100,14 @@ namespace EsiSearchProxy.Controllers
             return request;
         }
 
-        private async Task<HttpRequestMessage> CreateProxiedSearchRequest()
+        private HttpRequestMessage CreateProxiedSearchRequest()
         {
-            var characterSearchUrl = $"/v3/characters/{_esiConfiguration.CharacterId}/search/";
+            var (authorizationToken, characterId) = _esiTokenCache.GetCachedTokenWithCharacter();
+
+            var characterSearchUrl = $"/v3/characters/{characterId}/search/";
             var request = CreateEsiRequest("GET", characterSearchUrl);
 
-            // Attach an auth token to this request
-            var authorizationToken = await _esiAuthService.GetAccessToken();
+            // Attach the auth token to this request
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", authorizationToken);
 
             return request;
@@ -196,6 +201,14 @@ namespace EsiSearchProxy.Controllers
         {
             var methods = new[] { "POST", "PUT", "PATCH" };
             return methods.Contains(method.ToUpper());
+        }
+
+        private void SaveTokenFromRequest(HttpRequestMessage request)
+        {
+            // Check if the request has an authentication token
+            var token = request.Headers.Authorization?.Parameter;
+            if (token is not null)
+                _esiTokenCache.StoreToken(token);
         }
     }
 }
